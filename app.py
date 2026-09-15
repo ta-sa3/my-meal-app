@@ -23,11 +23,32 @@ def get_clients():
 
 client, sheet = get_clients()
 
-# スプレッドシートから全データを読み込む関数
+# 数値の安全な変換用関数
+def safe_float(val, default=0.0):
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+# スプレッドシートから全データを読み込む関数（スプレッドシートの実行番号 row_idx を保持）
 def load_data_from_sheet():
-    data = sheet.get_all_records()
-    if not data:
-        return pd.DataFrame(columns=["date", "user", "meal_time", "menu_name", "calories", "salt"])
+    rows = sheet.get_all_values()
+    if len(rows) <= 1:
+        return pd.DataFrame(columns=["row_idx", "date", "user", "meal_time", "menu_name", "calories", "salt"])
+    
+    data = []
+    # 1行目は見出し（ヘッダー）なので、2行目（インデックス2）から実データ
+    for idx, r in enumerate(rows[1:], start=2):
+        row_dict = {
+            "row_idx": idx,
+            "date": r[0] if len(r) > 0 else "",
+            "user": r[1] if len(r) > 1 else "",
+            "meal_time": r[2] if len(r) > 2 else "",
+            "menu_name": r[3] if len(r) > 3 else "",
+            "calories": safe_float(r[4]) if len(r) > 4 else 0.0,
+            "salt": safe_float(r[5]) if len(r) > 5 else 0.0,
+        }
+        data.append(row_dict)
     return pd.DataFrame(data)
 
 st.title("🍽️ 家族の食事・栄養管理アプリ")
@@ -41,7 +62,7 @@ for hour in range(24):
     for minute in [0, 30]:
         time_options.append(f"{hour:02d}:{minute:02d}")
 
-# 前後3日間の日付リストを生成（例: 3日前 〜 今日 〜 3日後）
+# 前後3日間の日付リストを生成（3日前 〜 今日 〜 3日後）
 today = datetime.now().date()
 date_options = []
 for i in range(-3, 4):
@@ -52,19 +73,16 @@ def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
     st.info(f"**【ペルソナ】** {persona_desc}")
     
-    # 入力フォーム
-    with st.form(key=f"form_{user_name}"):
+    # ---------------- 1. 新規入力フォーム ----------------
+    with st.form(key=f"form_add_{user_name}"):
+        st.subheader("➕ 新しい食事を記録")
         col1, col2 = st.columns(2)
         with col1:
-            # 日付を選択する欄（前後3日、初期値は今日「index=3」）
             selected_date = st.selectbox("日付を選択", options=date_options, index=3, key=f"date_{user_name}")
         with col2:
-            # 時間を選択する欄（30分刻み）
             selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
         
-        # 食べたものを入力する欄
         input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=f"inp_{user_name}")
-        
         submit = st.form_submit_button("AIで栄養計算して追加")
         
         if submit and input_text:
@@ -93,8 +111,8 @@ def user_page(user_name, persona_desc):
                     )
                     res_json = json.loads(response.text)
                     
-                    date_str = selected_date        # 選択した日付
-                    meal_time_str = selected_time   # 選択した時間
+                    date_str = selected_date
+                    meal_time_str = selected_time
                     menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
                     calories = res_json["total_calories"]
                     salt = res_json["total_salt"]
@@ -107,22 +125,88 @@ def user_page(user_name, persona_desc):
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
 
-    # スプレッドシートからデータを取得して表示
+    # ---------------- 2. 記録一覧の表示 ----------------
     df = load_data_from_sheet()
     
     st.subheader("📋 記録一覧")
+    user_df = pd.DataFrame()
     if not df.empty and "user" in df.columns:
         user_df = df[df["user"] == user_name]
         if not user_df.empty:
-            # 日付と時間の新しい順（または古い順）で見やすくソート
+            # 日時順で見やすくソート
             user_df = user_df.sort_values(by=["date", "meal_time"], ascending=[False, False])
-            st.dataframe(user_df[["date", "meal_time", "menu_name", "calories", "salt"]])
+            # 画面表示用には row_idx を除いた表を出す
+            st.dataframe(user_df[["date", "meal_time", "menu_name", "calories", "salt"]], use_container_width=True)
         else:
             st.info("まだ記録がありません。")
     else:
         st.info("まだ記録がありません。")
 
-    # 週刊アドバイスボタン
+    # ---------------- 3. 編集・削除メニュー ----------------
+    if not user_df.empty:
+        with st.expander("✏️ 過去の記録を修正・削除する"):
+            # 選択肢用のラベルを作成
+            options_dict = {
+                int(row["row_idx"]): f"【{row['date']} {row['meal_time']}】 {row['menu_name']} ({row['calories']}kcal / 塩分{row['salt']}g)"
+                for _, row in user_df.iterrows()
+            }
+            
+            target_row_idx = st.selectbox(
+                "修正または削除したい記録を選択してください",
+                options=list(options_dict.keys()),
+                format_func=lambda x: options_dict[x],
+                key=f"sel_edit_{user_name}"
+            )
+            
+            # 選択された行の現在のデータを取得
+            selected_row = user_df[user_df["row_idx"] == target_row_idx].iloc[0]
+            
+            with st.form(key=f"form_edit_{user_name}_{target_row_idx}"):
+                st.write("▼ 修正したい項目を書き換えてください")
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    edit_date = st.text_input("日付 (YYYY-MM-DD)", value=str(selected_row["date"]))
+                with col_e2:
+                    current_time = str(selected_row["meal_time"])
+                    time_idx = time_options.index(current_time) if current_time in time_options else 0
+                    edit_time = st.selectbox("時間", options=time_options, index=time_idx)
+                
+                edit_menu = st.text_input("食べたもの", value=str(selected_row["menu_name"]))
+                
+                col_e3, col_e4 = st.columns(2)
+                with col_e3:
+                    edit_cal = st.number_input("カロリー (kcal)", value=float(selected_row["calories"]), step=10.0)
+                with col_e4:
+                    edit_salt = st.number_input("塩分 (g)", value=float(selected_row["salt"]), step=0.1)
+                
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    update_btn = st.form_submit_button("💾 変更を保存する")
+                with col_btn2:
+                    delete_btn = st.form_submit_button("🗑️ この記録を削除する")
+                
+                if update_btn:
+                    try:
+                        # スプレッドシートの該当行を上書き更新
+                        sheet.update(
+                            range_name=f"A{target_row_idx}:F{target_row_idx}",
+                            values=[[edit_date, user_name, edit_time, edit_menu, edit_cal, edit_salt]]
+                        )
+                        st.success("記録を更新しました！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"更新に失敗しました: {e}")
+                        
+                if delete_btn:
+                    try:
+                        # スプレッドシートの該当行を削除
+                        sheet.delete_rows(int(target_row_idx))
+                        st.success("記録を削除しました！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"削除に失敗しました: {e}")
+
+    # ---------------- 4. 週間アドバイス ----------------
     if st.button(f"💡 {user_name} の週間AIアドバイスをもらう", key=f"adv_{user_name}"):
         with st.spinner("管理栄養士AIが分析中..."):
             df = load_data_from_sheet()
