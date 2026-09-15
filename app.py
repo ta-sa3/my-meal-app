@@ -5,7 +5,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 import json
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="家族の食事・栄養管理アプリ", page_icon="🍽️", layout="centered")
 
@@ -41,14 +41,26 @@ for hour in range(24):
     for minute in [0, 30]:
         time_options.append(f"{hour:02d}:{minute:02d}")
 
+# 前後3日間の日付リストを生成（例: 3日前 〜 今日 〜 3日後）
+today = datetime.now().date()
+date_options = []
+for i in range(-3, 4):
+    d = today + timedelta(days=i)
+    date_options.append(d.strftime("%Y-%m-%d"))
+
 def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
     st.info(f"**【ペルソナ】** {persona_desc}")
     
     # 入力フォーム
     with st.form(key=f"form_{user_name}"):
-        # 時間を選択する欄（30分刻み）
-        selected_time = st.selectbox("食事の時間を選択", options=time_options, key=f"time_{user_name}")
+        col1, col2 = st.columns(2)
+        with col1:
+            # 日付を選択する欄（前後3日、初期値は今日「index=3」）
+            selected_date = st.selectbox("日付を選択", options=date_options, index=3, key=f"date_{user_name}")
+        with col2:
+            # 時間を選択する欄（30分刻み）
+            selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
         
         # 食べたものを入力する欄
         input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=f"inp_{user_name}")
@@ -81,14 +93,14 @@ def user_page(user_name, persona_desc):
                     )
                     res_json = json.loads(response.text)
                     
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    meal_time_str = selected_time  # 選択した時間をそのまま使用
+                    date_str = selected_date        # 選択した日付
+                    meal_time_str = selected_time   # 選択した時間
                     menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
                     calories = res_json["total_calories"]
                     salt = res_json["total_salt"]
                     
                     # スプレッドシートの末尾に1行追加
-                    sheet.append_row([today_str, user_name, meal_time_str, menu_name, calories, salt])
+                    sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
                     
                     st.success("追加してスプレッドシートに保存しました！")
                     st.rerun()
@@ -102,8 +114,8 @@ def user_page(user_name, persona_desc):
     if not df.empty and "user" in df.columns:
         user_df = df[df["user"] == user_name]
         if not user_df.empty:
-            # 時間順にソートして綺麗に見せる
-            user_df = user_df.sort_values(by=["date", "meal_time"])
+            # 日付と時間の新しい順（または古い順）で見やすくソート
+            user_df = user_df.sort_values(by=["date", "meal_time"], ascending=[False, False])
             st.dataframe(user_df[["date", "meal_time", "menu_name", "calories", "salt"]])
         else:
             st.info("まだ記録がありません。")
