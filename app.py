@@ -17,7 +17,7 @@ def get_clients():
     
     # gspreadでスプレッドシートに接続
     gc = gspread.service_account_from_dict(dict(st.secrets["gspread_credentials"]))
-    # ※作成したスプレッドシートの正確なファイル名に書き換えてください
+    # ※スプレッドシートのファイル名（必要に応じて変更してください）
     sheet = gc.open("my_meal_app_db").sheet1  
     return client, sheet
 
@@ -35,13 +35,24 @@ st.title("🍽️ 家族の食事・栄養管理アプリ")
 # タブ切り替え
 tab_self, tab_mom = st.tabs(["👤 自分", "👩 お母さん"])
 
+# 30分刻みの時間リストを生成 (00:00 〜 23:30)
+time_options = []
+for hour in range(24):
+    for minute in [0, 30]:
+        time_options.append(f"{hour:02d}:{minute:02d}")
+
 def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
     st.info(f"**【ペルソナ】** {persona_desc}")
     
     # 入力フォーム
     with st.form(key=f"form_{user_name}"):
-        input_text = st.text_input("食べたものをざっくり入力（例: 昼にラーメン食べた）", key=f"inp_{user_name}")
+        # 時間を選択する欄（30分刻み）
+        selected_time = st.selectbox("食事の時間を選択", options=time_options, key=f"time_{user_name}")
+        
+        # 食べたものを入力する欄
+        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=f"inp_{user_name}")
+        
         submit = st.form_submit_button("AIで栄養計算して追加")
         
         if submit and input_text:
@@ -54,7 +65,6 @@ def user_page(user_name, persona_desc):
                         salt: float = Field(description="塩分")
 
                     class MealAnalysis(BaseModel):
-                        meal_time: str = Field(description="食事時間帯")
                         items: list[MealNutrient]
                         total_calories: float
                         total_salt: float
@@ -72,16 +82,16 @@ def user_page(user_name, persona_desc):
                     res_json = json.loads(response.text)
                     
                     today_str = datetime.now().strftime("%Y-%m-%d")
-                    meal_time = res_json.get("meal_time", "食事")
+                    meal_time_str = selected_time  # 選択した時間をそのまま使用
                     menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
                     calories = res_json["total_calories"]
                     salt = res_json["total_salt"]
                     
                     # スプレッドシートの末尾に1行追加
-                    sheet.append_row([today_str, user_name, meal_time, menu_name, calories, salt])
+                    sheet.append_row([today_str, user_name, meal_time_str, menu_name, calories, salt])
                     
                     st.success("追加してスプレッドシートに保存しました！")
-                    st.rerun() # 画面をリロードして最新化
+                    st.rerun()
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
 
@@ -92,6 +102,8 @@ def user_page(user_name, persona_desc):
     if not df.empty and "user" in df.columns:
         user_df = df[df["user"] == user_name]
         if not user_df.empty:
+            # 時間順にソートして綺麗に見せる
+            user_df = user_df.sort_values(by=["date", "meal_time"])
             st.dataframe(user_df[["date", "meal_time", "menu_name", "calories", "salt"]])
         else:
             st.info("まだ記録がありません。")
@@ -99,7 +111,7 @@ def user_page(user_name, persona_desc):
         st.info("まだ記録がありません。")
 
     # 週刊アドバイスボタン
-    if st.button(f"💡 {user_name} の週間AIアドバイスをもらう", key=f"adv_{user_name}*"):
+    if st.button(f"💡 {user_name} の週間AIアドバイスをもらう", key=f"adv_{user_name}"):
         with st.spinner("管理栄養士AIが分析中..."):
             df = load_data_from_sheet()
             user_df = df[df["user"] == user_name] if not df.empty and "user" in df.columns else pd.DataFrame()
