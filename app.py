@@ -71,13 +71,16 @@ def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
     st.info(f"**【ペルソナ・目標】**\n\n{persona_desc}")
     
-    # 入力内容を保持するためのセッションステートの初期化
-    input_key = f"inp_{user_name}"
-    if input_key not in st.session_state:
-        st.session_state[input_key] = ""
+    # フォームの入力内容をきれいに管理するためのステートキー
+    form_counter_key = f"form_counter_{user_name}"
+    if form_counter_key not in st.session_state:
+        st.session_state[form_counter_key] = 0
 
     # ---------------- 1. 新規入力フォーム ----------------
-    with st.form(key=f"form_add_{user_name}"):
+    # フォームごとにカウンター番号を付与することで、送信成功時にフォーム全体をリセット（再描画）させる
+    form_key = f"form_add_{user_name}_{st.session_state[form_counter_key]}"
+    
+    with st.form(key=form_key):
         st.subheader("➕ 新しい食事を記録")
         col1, col2 = st.columns(2)
         with col1:
@@ -85,55 +88,53 @@ def user_page(user_name, persona_desc):
         with col2:
             selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
         
-        # フォーム内のテキスト入力（セッションステートと連動）
-        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=input_key)
+        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=f"inp_{user_name}")
         submit = st.form_submit_button("AIで栄養計算して追加")
         
-    # フォームの外で送信処理を行い、テキストボックスをクリアできるようにする
-    if submit:
-        if input_text.strip() == "":
-            st.warning("食べたものを入力してください。")
-        else:
-            with st.spinner("AIが栄養素を解析中 & スプレッドシートに保存中..."):
-                try:
-                    class MealNutrient(BaseModel):
-                        menu_name: str = Field(description="料理名または商品名")
-                        grams: int = Field(description="グラム数")
-                        calories: float = Field(description="カロリー")
-                        salt: float = Field(description="塩分")
+        if submit:
+            if input_text.strip() == "":
+                st.warning("食べたものを入力してください。")
+            else:
+                with st.spinner("AIが栄養素を解析中 & スプレッドシートに保存中..."):
+                    try:
+                        class MealNutrient(BaseModel):
+                            menu_name: str = Field(description="料理名または商品名")
+                            grams: int = Field(description="グラム数")
+                            calories: float = Field(description="カロリー")
+                            salt: float = Field(description="塩分")
 
-                    class MealAnalysis(BaseModel):
-                        items: list[MealNutrient]
-                        total_calories: float
-                        total_salt: float
+                        class MealAnalysis(BaseModel):
+                            items: list[MealNutrient]
+                            total_calories: float
+                            total_salt: float
 
-                    response = client.models.generate_content(
-                        model='gemini-3.6-flash',
-                        contents=f"以下の食事記録から栄養素を算出して構造化してください：\n{input_text}",
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=MealAnalysis,
-                            tools=[{"google_search": {}}],
-                            temperature=0.1,
+                        response = client.models.generate_content(
+                            model='gemini-3.6-flash',
+                            contents=f"以下の食事記録から栄養素を算出して構造化してください：\n{input_text}",
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema=MealAnalysis,
+                                tools=[{"google_search": {}}],
+                                temperature=0.1,
+                            )
                         )
-                    )
-                    res_json = json.loads(response.text)
-                    
-                    date_str = selected_date
-                    meal_time_str = selected_time
-                    menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
-                    calories = res_json["total_calories"]
-                    salt = res_json["total_salt"]
-                    
-                    # スプレッドシートの末尾に1行追加
-                    sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
-                    
-                    # 入力欄をクリア
-                    st.session_state[input_key] = ""
-                    st.success("追加してスプレッドシートに保存しました！")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
+                        res_json = json.loads(response.text)
+                        
+                        date_str = selected_date
+                        meal_time_str = selected_time
+                        menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
+                        calories = res_json["total_calories"]
+                        salt = res_json["total_salt"]
+                        
+                        # スプレッドシートの末尾に1行追加
+                        sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
+                        
+                        # カウンターをインクリメントしてフォームを新鮮な状態（空っぽ）にリセット
+                        st.session_state[form_counter_key] += 1
+                        st.success("追加してスプレッドシートに保存しました！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"エラーが発生しました: {e}")
 
     # ---------------- 2. 記録一覧の表示 ----------------
     df = load_data_from_sheet()
