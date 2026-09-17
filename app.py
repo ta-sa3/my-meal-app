@@ -17,7 +17,6 @@ def get_clients():
     
     # gspreadでスプレッドシートに接続
     gc = gspread.service_account_from_dict(dict(st.secrets["gspread_credentials"]))
-    # ※スプレッドシートのファイル名（必要に応じて変更してください）
     sheet = gc.open("my_meal_app_db").sheet1  
     return client, sheet
 
@@ -30,14 +29,13 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
-# スプレッドシートから全データを読み込む関数（スプレッドシートの実行番号 row_idx を保持）
+# スプレッドシートから全データを読み込む関数（row_idx を保持）
 def load_data_from_sheet():
     rows = sheet.get_all_values()
     if len(rows) <= 1:
         return pd.DataFrame(columns=["row_idx", "date", "user", "meal_time", "menu_name", "calories", "salt"])
     
     data = []
-    # 1行目は見出し（ヘッダー）なので、2行目（インデックス2）から実データ
     for idx, r in enumerate(rows[1:], start=2):
         row_dict = {
             "row_idx": idx,
@@ -71,8 +69,13 @@ for i in range(-3, 4):
 
 def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
-    st.info(f"**【ペルソナ】** {persona_desc}")
+    st.info(f"**【ペルソナ・目標】**\n\n{persona_desc}")
     
+    # 入力内容を保持するためのセッションステートの初期化
+    input_key = f"inp_{user_name}"
+    if input_key not in st.session_state:
+        st.session_state[input_key] = ""
+
     # ---------------- 1. 新規入力フォーム ----------------
     with st.form(key=f"form_add_{user_name}"):
         st.subheader("➕ 新しい食事を記録")
@@ -82,10 +85,15 @@ def user_page(user_name, persona_desc):
         with col2:
             selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
         
-        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=f"inp_{user_name}")
+        # フォーム内のテキスト入力（セッションステートと連動）
+        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=input_key)
         submit = st.form_submit_button("AIで栄養計算して追加")
         
-        if submit and input_text:
+    # フォームの外で送信処理を行い、テキストボックスをクリアできるようにする
+    if submit:
+        if input_text.strip() == "":
+            st.warning("食べたものを入力してください。")
+        else:
             with st.spinner("AIが栄養素を解析中 & スプレッドシートに保存中..."):
                 try:
                     class MealNutrient(BaseModel):
@@ -120,6 +128,8 @@ def user_page(user_name, persona_desc):
                     # スプレッドシートの末尾に1行追加
                     sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
                     
+                    # 入力欄をクリア
+                    st.session_state[input_key] = ""
                     st.success("追加してスプレッドシートに保存しました！")
                     st.rerun()
                 except Exception as e:
@@ -133,9 +143,7 @@ def user_page(user_name, persona_desc):
     if not df.empty and "user" in df.columns:
         user_df = df[df["user"] == user_name]
         if not user_df.empty:
-            # 日時順で見やすくソート
             user_df = user_df.sort_values(by=["date", "meal_time"], ascending=[False, False])
-            # 画面表示用には row_idx を除いた表を出す
             st.dataframe(user_df[["date", "meal_time", "menu_name", "calories", "salt"]], use_container_width=True)
         else:
             st.info("まだ記録がありません。")
@@ -145,7 +153,6 @@ def user_page(user_name, persona_desc):
     # ---------------- 3. 編集・削除メニュー ----------------
     if not user_df.empty:
         with st.expander("✏️ 過去の記録を修正・削除する"):
-            # 選択肢用のラベルを作成
             options_dict = {
                 int(row["row_idx"]): f"【{row['date']} {row['meal_time']}】 {row['menu_name']} ({row['calories']}kcal / 塩分{row['salt']}g)"
                 for _, row in user_df.iterrows()
@@ -158,7 +165,6 @@ def user_page(user_name, persona_desc):
                 key=f"sel_edit_{user_name}"
             )
             
-            # 選択された行の現在のデータを取得
             selected_row = user_df[user_df["row_idx"] == target_row_idx].iloc[0]
             
             with st.form(key=f"form_edit_{user_name}_{target_row_idx}"):
@@ -187,7 +193,6 @@ def user_page(user_name, persona_desc):
                 
                 if update_btn:
                     try:
-                        # スプレッドシートの該当行を上書き更新
                         sheet.update(
                             range_name=f"A{target_row_idx}:F{target_row_idx}",
                             values=[[edit_date, user_name, edit_time, edit_menu, edit_cal, edit_salt]]
@@ -199,7 +204,6 @@ def user_page(user_name, persona_desc):
                         
                 if delete_btn:
                     try:
-                        # スプレッドシートの該当行を削除
                         sheet.delete_rows(int(target_row_idx))
                         st.success("記録を削除しました！")
                         st.rerun()
@@ -215,11 +219,14 @@ def user_page(user_name, persona_desc):
             avg_salt = user_df["salt"].mean() if not user_df.empty and "salt" in user_df.columns else 0
             
             prompt = f"""
-            あなたはプロの管理栄養士です。以下の食事データの平均値とペルソナ情報をもとに、専門的で具体的なアドバイスを作成してください。
+            あなたは優秀なプロの管理栄養士です。以下の食事データの平均値とユーザーの具体的な身体データ・目標をもとに、専門的で実行しやすい具体的なアドバイスを作成してください。
             【ユーザー】{user_name}
-            【ペルソナ】{persona_desc}
-            【直近の平均】カロリー: {avg_cal:.1f} kcal, 塩分: {avg_salt:.1f} g
-            構成：1. 今週の総評 2. カロリーと塩分についての詳しい改善提案
+            【ペルソナ・目標】{persona_desc}
+            【直近の平均実績】1日あたり平均 カロリー: {avg_cal:.1f} kcal, 塩分: {avg_salt:.1f} g
+            
+            構成：
+            1. 今週の食事の総評（目標達成に向けた進捗評価）
+            2. カロリーと塩分についての詳しい改善・調整提案（具体的な食材やメニューの工夫を含む）
             """
             adv_res = client.models.generate_content(
                 model='gemini-3.6-flash',
@@ -228,7 +235,7 @@ def user_page(user_name, persona_desc):
             st.markdown(adv_res.text)
 
 with tab_self:
-    user_page("自分", "30代、運動習慣なし。筋肉をつけつつカロリーと塩分のバランスを整えたい。")
+    user_page("自分", "30代男性、身長164cm・体重48kg、運動習慣なし。目標：健康的に筋肉を増やしてバルクアップしたい。")
 
 with tab_mom:
-    user_page("お母さん", "60代、高血圧、運動習慣なし。特にカロリー、塩分について詳しいアドバイスが欲しい。")
+    user_page("お母さん", "60代女性、身長138cm・体重51kg、高血圧、運動習慣なし。目標：血圧管理のために塩分をしっかり抑えつつ、4ヶ月で-3kgを達成する。")
