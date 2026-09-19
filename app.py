@@ -71,67 +71,65 @@ def user_page(user_name, persona_desc):
     st.header(f"{user_name} のページ")
     st.info(f"**【ペルソナ・目標】**\n\n{persona_desc}")
     
-    # 入力テキストの状態管理用キー
+    # 入力テキストの状態管理用キー（フォームの外で安全に管理）
     input_key = f"input_text_{user_name}"
     if input_key not in st.session_state:
         st.session_state[input_key] = ""
 
-    # ---------------- 1. 新規入力エリア（フォームレス） ----------------
-    st.subheader("➕ 新しい食事を記録")
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_date = st.selectbox("日付を選択", options=date_options, index=3, key=f"date_{user_name}")
-    with col2:
-        selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
-    
-    # テキスト入力（session_stateと連動）
-    input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）", key=input_key)
-    submit = st.button("AIで栄養計算して追加", key=f"btn_add_{user_name}")
-    
-    if submit:
-        if not input_text or input_text.strip() == "":
-            st.warning("食べたものを入力してください。")
-        else:
-            with st.spinner("AIが栄養素を解析中 & スプレッドシートに保存中..."):
-                try:
-                    class MealNutrient(BaseModel):
-                        menu_name: str = Field(description="料理名または商品名")
-                        grams: int = Field(description="グラム数")
-                        calories: float = Field(description="カロリー")
-                        salt: float = Field(description="塩分")
+    # ---------------- 1. 新規入力フォーム ----------------
+    with st.form(key=f"form_add_{user_name}", clear_on_submit=True):
+        st.subheader("➕ 新しい食事を記録")
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_date = st.selectbox("日付を選択", options=date_options, index=3, key=f"date_{user_name}")
+        with col2:
+            selected_time = st.selectbox("時間を選択", options=time_options, key=f"time_{user_name}")
+        
+        input_text = st.text_input("食べたものをざっくり入力（例: 納豆ご飯と味噌汁）")
+        submit = st.form_submit_button("AIで栄養計算して追加")
+        
+        if submit:
+            if not input_text or input_text.strip() == "":
+                st.warning("食べたものを入力してください。")
+            else:
+                with st.spinner("AIが栄養素を解析中 & スプレッドシートに保存中..."):
+                    try:
+                        class MealNutrient(BaseModel):
+                            menu_name: str = Field(description="料理名または商品名")
+                            grams: int = Field(description="グラム数")
+                            calories: float = Field(description="カロリー")
+                            salt: float = Field(description="塩分")
 
-                    class MealAnalysis(BaseModel):
-                        items: list[MealNutrient]
-                        total_calories: float
-                        total_salt: float
+                        class MealAnalysis(BaseModel):
+                            items: list[MealNutrient]
+                            total_calories: float
+                            total_salt: float
 
-                    response = client.models.generate_content(
-                        model='gemini-3.6-flash',
-                        contents=f"以下の食事記録から栄養素を算出して構造化してください：\n{input_text}",
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=MealAnalysis,
-                            tools=[{"google_search": {}}],
-                            temperature=0.1,
+                        response = client.models.generate_content(
+                            model='gemini-3.6-flash',
+                            contents=f"以下の食事記録から栄養素を算出して構造化してください：\n{input_text}",
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema=MealAnalysis,
+                                tools=[{"google_search": {}}],
+                                temperature=0.1,
+                            )
                         )
-                    )
-                    res_json = json.loads(response.text)
-                    
-                    date_str = selected_date
-                    meal_time_str = selected_time
-                    menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
-                    calories = res_json["total_calories"]
-                    salt = res_json["total_salt"]
-                    
-                    # スプレッドシートの末尾に1行追加
-                    sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
-                    
-                    # 入力欄の文字を空にする
-                    st.session_state[input_key] = ""
-                    st.success("追加してスプレッドシートに保存しました！")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
+                        res_json = json.loads(response.text)
+                        
+                        date_str = selected_date
+                        meal_time_str = selected_time
+                        menu_name = ", ".join([item["menu_name"] for item in res_json["items"]])
+                        calories = res_json["total_calories"]
+                        salt = res_json["total_salt"]
+                        
+                        # スプレッドシートの末尾に1行追加
+                        sheet.append_row([date_str, user_name, meal_time_str, menu_name, calories, salt])
+                        
+                        st.success("追加してスプレッドシートに保存しました！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"エラーが発生しました: {e}")
 
     # ---------------- 2. 記録一覧の表示 ----------------
     df = load_data_from_sheet()
